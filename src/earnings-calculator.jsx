@@ -1,7 +1,9 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { createClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL = "https://znsokxakmlviikvniftf.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpuc29reGFrbWx2aWlrdm5pZnRmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIxNjk2MTAsImV4cCI6MjA5Nzc0NTYxMH0.Cp8KcXLpksUbVjbwmgYWWKPTMVQ6_eqtzkKJspua27M";
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const DEFAULT_SETTINGS = {
   hourlyRate: 150,
@@ -13,67 +15,109 @@ const DEFAULT_SETTINGS = {
 const MONTHS_PL = ["Styczeń","Luty","Marzec","Kwiecień","Maj","Czerwiec","Lipiec","Sierpień","Wrzesień","Październik","Listopad","Grudzień"];
 const DAYS_PL = ["Pn","Wt","Śr","Cz","Pt","Sb","Nd"];
 
-// --- Supabase helpers ---
-async function sbFetch(path, options = {}) {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
-    ...options,
-    headers: {
-      "apikey": SUPABASE_KEY,
-      "Authorization": `Bearer ${SUPABASE_KEY}`,
-      "Content-Type": "application/json",
-      "Prefer": "return=representation",
-      ...options.headers,
-    },
-  });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Supabase error ${res.status}: ${err}`);
+async function fetchCurrentUser() {
+  const { data, error } = await supabase.auth.getSession();
+  if (error) throw error;
+  return data.session?.user ?? null;
+}
+
+async function loadSettings(userId) {
+  const { data, error } = await supabase
+    .from("earnings_settings")
+    .select("id, hourly_rate, tax_rate, zus_amount, currency")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) return null;
+  return { hourlyRate: data.hourly_rate, taxRate: data.tax_rate, zusAmount: data.zus_amount, currency: data.currency };
+}
+
+async function saveSettings(userId, s) {
+  const { data: existing, error: readError } = await supabase
+    .from("earnings_settings")
+    .select("id")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (readError) throw readError;
+
+  if (existing) {
+    const { error } = await supabase
+      .from("earnings_settings")
+      .update({
+        hourly_rate: s.hourlyRate,
+        tax_rate: s.taxRate,
+        zus_amount: s.zusAmount,
+        currency: s.currency,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("user_id", userId);
+
+    if (error) throw error;
+    return;
   }
-  const text = await res.text();
-  return text ? JSON.parse(text) : null;
-}
 
-async function loadSettings() {
-  const data = await sbFetch("earnings_settings?id=eq.default&select=*");
-  if (data && data.length > 0) {
-    const r = data[0];
-    return { hourlyRate: r.hourly_rate, taxRate: r.tax_rate, zusAmount: r.zus_amount, currency: r.currency };
-  }
-  return null;
-}
-
-async function saveSettings(s) {
-  await sbFetch("earnings_settings", {
-    method: "POST",
-    headers: { "Prefer": "resolution=merge-duplicates,return=representation" },
-    body: JSON.stringify({
-      id: "default",
-      hourly_rate: s.hourlyRate,
-      tax_rate: s.taxRate,
-      zus_amount: s.zusAmount,
-      currency: s.currency,
-      updated_at: new Date().toISOString(),
-    }),
+  const { error } = await supabase.from("earnings_settings").insert({
+    id: userId,
+    user_id: userId,
+    hourly_rate: s.hourlyRate,
+    tax_rate: s.taxRate,
+    zus_amount: s.zusAmount,
+    currency: s.currency,
+    updated_at: new Date().toISOString(),
   });
+
+  if (error) throw error;
 }
 
-async function loadDays() {
-  const data = await sbFetch("earnings_days?select=*");
+async function loadDays(userId) {
+  const { data, error } = await supabase
+    .from("earnings_days")
+    .select("date_key, hours, rate")
+    .eq("user_id", userId);
+
+  if (error) throw error;
   const map = {};
   if (data) data.forEach(r => { map[r.date_key] = { hours: r.hours, rate: r.rate }; });
   return map;
 }
 
-async function upsertDay(dateKey, hours, rate) {
-  await sbFetch("earnings_days", {
-    method: "POST",
-    headers: { "Prefer": "resolution=merge-duplicates,return=representation" },
-    body: JSON.stringify({ date_key: dateKey, hours, rate, updated_at: new Date().toISOString() }),
+async function upsertDay(userId, dateKey, hours, rate) {
+  const { data: existing, error: readError } = await supabase
+    .from("earnings_days")
+    .select("date_key")
+    .eq("user_id", userId)
+    .eq("date_key", dateKey)
+    .maybeSingle();
+
+  if (readError) throw readError;
+
+  if (existing) {
+    const { error } = await supabase
+      .from("earnings_days")
+      .update({ hours, rate, updated_at: new Date().toISOString() })
+      .eq("user_id", userId)
+      .eq("date_key", dateKey);
+
+    if (error) throw error;
+    return;
+  }
+
+  const { error } = await supabase.from("earnings_days").insert({
+    user_id: userId,
+    date_key: dateKey,
+    hours,
+    rate,
+    updated_at: new Date().toISOString(),
   });
+
+  if (error) throw error;
 }
 
-async function deleteDay(dateKey) {
-  await sbFetch(`earnings_days?date_key=eq.${dateKey}`, { method: "DELETE", headers: { "Prefer": "" } });
+async function deleteDay(userId, dateKey) {
+  const { error } = await supabase.from("earnings_days").delete().eq("user_id", userId).eq("date_key", dateKey);
+  if (error) throw error;
 }
 
 // --- Utils ---
@@ -89,6 +133,8 @@ export default function App() {
   const [days, setDays] = useState({});
   const [loadState, setLoadState] = useState("loading");
   const [syncStatus, setSyncStatus] = useState(null);
+  const [user, setUser] = useState(null);
+  const [authForm, setAuthForm] = useState({ email: "", loading: false, message: "" });
 
   const [view, setView] = useState("calendar");
   const [currentDate, setCurrentDate] = useState(() => {
@@ -101,24 +147,72 @@ export default function App() {
   const [settingsForm, setSettingsForm] = useState(null);
 
   useEffect(() => {
+    let active = true;
+
     async function load() {
       try {
-        const [s, d] = await Promise.all([loadSettings(), loadDays()]);
+        const currentUser = await fetchCurrentUser();
+        if (!active) return;
+        setUser(currentUser);
+        if (!currentUser) {
+          setSettings(DEFAULT_SETTINGS);
+          setDays({});
+          setLoadState("ready");
+          return;
+        }
+
+        const [s, d] = await Promise.all([loadSettings(currentUser.id), loadDays(currentUser.id)]);
+        if (!active) return;
         if (s) setSettings(s);
         if (d) setDays(d);
         setLoadState("ready");
-      } catch (e) {
-        setLoadState("error");
+      } catch {
+        if (!active) return;
+        setUser(null);
+        setSettings(DEFAULT_SETTINGS);
+        setDays({});
+        setLoadState("ready");
       }
     }
     load();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      if (!active) return;
+      const currentUser = session?.user ?? null;
+      setUser(currentUser);
+
+      if (!currentUser) {
+        setSettings(DEFAULT_SETTINGS);
+        setDays({});
+        setLoadState("ready");
+        return;
+      }
+
+      setLoadState("loading");
+      try {
+        const [s, d] = await Promise.all([loadSettings(currentUser.id), loadDays(currentUser.id)]);
+        if (!active) return;
+        setSettings(s ?? DEFAULT_SETTINGS);
+        setDays(d ?? {});
+        setLoadState("ready");
+      } catch {
+        if (!active) return;
+        setLoadState("error");
+      }
+    });
+
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
   }, []);
 
-  useEffect(() => {
-    if (view === "settings") setSettingsForm({ ...settings });
-  }, [view]);
-
   const withSync = useCallback(async (fn) => {
+    if (!user) {
+      setSyncStatus("error");
+      setTimeout(() => setSyncStatus(null), 4000);
+      return;
+    }
     setSyncStatus("saving");
     try {
       await fn();
@@ -128,7 +222,7 @@ export default function App() {
       setSyncStatus("error");
       setTimeout(() => setSyncStatus(null), 4000);
     }
-  }, []);
+  }, [user]);
 
   const getDateKey = (year, month, day) =>
     `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
@@ -149,18 +243,18 @@ export default function App() {
     setEditingDay(null);
     if (h === 0) {
       setDays(prev => { const n = { ...prev }; delete n[key]; return n; });
-      await withSync(() => deleteDay(key));
+      await withSync(() => deleteDay(user.id, key));
     } else {
       const rate = isNaN(r) || r <= 0 ? settings.hourlyRate : r;
       setDays(prev => ({ ...prev, [key]: { hours: h, rate } }));
-      await withSync(() => upsertDay(key, h, rate));
+      await withSync(() => upsertDay(user.id, key, h, rate));
     }
   };
 
   const removeDayImmediate = async (key) => {
     setEditingDay(null);
     setDays(prev => { const n = { ...prev }; delete n[key]; return n; });
-    await withSync(() => deleteDay(key));
+    await withSync(() => deleteDay(user.id, key));
   };
 
   const handleSaveSettings = async () => {
@@ -171,7 +265,7 @@ export default function App() {
     const ns = { ...settings, hourlyRate: hr, taxRate: Math.max(0, Math.min(100, tr)), zusAmount: zu };
     setSettings(ns);
     setView("calendar");
-    await withSync(() => saveSettings(ns));
+    await withSync(() => saveSettings(user.id, ns));
   };
 
   const monthStats = useCallback(() => {
@@ -210,10 +304,82 @@ export default function App() {
     <div style={{ minHeight:"100vh", background:"#111113", display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", gap:"12px", fontFamily:"'Inter',system-ui,sans-serif", color:"#FF6B6B", padding:"24px", textAlign:"center" }}>
       <div style={{ fontSize:"32px" }}>⚠</div>
       <div style={{ fontSize:"16px", fontWeight:"700" }}>Błąd połączenia z Supabase</div>
-      <div style={{ fontSize:"13px", color:"#6E6E73", maxWidth:"300px" }}>Sprawdź czy tabele zostały utworzone i czy klucz API jest poprawny.</div>
+      <div style={{ fontSize:"13px", color:"#6E6E73", maxWidth:"300px" }}>Sprawdź konfigurację auth i tabele oraz upewnij się, że użytkownik jest zalogowany.</div>
       <button onClick={() => { setLoadState("loading"); location.reload(); }} style={{ marginTop:"8px", background:"#AEEF6B", border:"none", borderRadius:"10px", padding:"10px 20px", fontWeight:"700", cursor:"pointer", fontSize:"13px" }}>Spróbuj ponownie</button>
     </div>
   );
+
+  if (!user) {
+    return (
+      <div style={{ minHeight:"100vh", background:"#111113", color:"#F0F0F0", fontFamily:"'Inter',system-ui,sans-serif", display:"flex", alignItems:"center", justifyContent:"center", padding:"24px" }}>
+        <style>{`
+          @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+          *{box-sizing:border-box;margin:0;padding:0}
+          input{font-family:inherit}
+        `}</style>
+        <div style={{ width:"100%", maxWidth:"420px", background:"linear-gradient(135deg,#1C1C1E 0%,#252528 100%)", border:"1px solid #2C2C2E", borderRadius:"24px", padding:"28px" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:"10px", marginBottom:"20px" }}>
+            <div style={{ width:"32px", height:"32px", borderRadius:"10px", background:"#AEEF6B", display:"flex", alignItems:"center", justifyContent:"center" }}>
+              <span style={{ fontSize:"14px", fontWeight:"900", color:"#111113" }}>zł</span>
+            </div>
+            <div>
+              <div style={{ fontSize:"18px", fontWeight:"800" }}>Zarobki</div>
+              <div style={{ fontSize:"12px", color:"#6E6E73" }}>Zaloguj się, aby zsynchronizować dane</div>
+            </div>
+          </div>
+
+          <div style={{ display:"grid", gap:"14px" }}>
+            <div>
+              <label style={{ display:"block", fontSize:"12px", textTransform:"uppercase", letterSpacing:"0.8px", color:"#6E6E73", fontWeight:"600", marginBottom:"6px" }}>Email</label>
+              <input
+                type="email"
+                value={authForm.email}
+                onChange={e => setAuthForm(f => ({ ...f, email: e.target.value }))}
+                placeholder="twoj@email.pl"
+                style={{ width:"100%", background:"#111113", border:"1px solid #2C2C2E", borderRadius:"12px", padding:"14px", color:"#F0F0F0", fontSize:"15px", outline:"none" }}
+              />
+            </div>
+
+            <button
+              onClick={async () => {
+                if (!authForm.email.trim()) {
+                  setAuthForm(f => ({ ...f, message: "Podaj adres email." }));
+                  return;
+                }
+
+                setAuthForm(f => ({ ...f, loading: true, message: "" }));
+                const { error } = await supabase.auth.signInWithOtp({
+                  email: authForm.email.trim(),
+                  options: {
+                    emailRedirectTo: window.location.origin,
+                  },
+                });
+                setAuthForm(f => ({
+                  ...f,
+                  loading: false,
+                  message: error ? `Nie udało się wysłać linku: ${error.message}` : "Sprawdź skrzynkę i kliknij link logowania.",
+                }));
+              }}
+              disabled={authForm.loading}
+              style={{ width:"100%", background:"#AEEF6B", border:"none", borderRadius:"12px", padding:"14px", fontSize:"15px", fontWeight:"800", color:"#111113", cursor:"pointer", opacity: authForm.loading ? 0.7 : 1 }}
+            >
+              {authForm.loading ? "Wysyłam link…" : "Wyślij link logowania"}
+            </button>
+
+            {authForm.message && (
+              <div style={{ fontSize:"13px", color: authForm.message.startsWith("Nie udało się") ? "#FF6B6B" : "#AEEF6B", lineHeight:"1.4" }}>
+                {authForm.message}
+              </div>
+            )}
+
+            <div style={{ fontSize:"12px", color:"#555558", lineHeight:"1.5" }}>
+              Po zalogowaniu każda osoba widzi tylko swoje wpisy dzięki RLS i kolumnie <span style={{ color:"#AEEF6B" }}>user_id</span>.
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // --- Main UI ---
   return (
@@ -245,6 +411,13 @@ export default function App() {
           <span style={{ fontSize:"11px", color:"#3A3A3C", fontWeight:"500" }}>Supabase</span>
         </div>
         <div style={{ display:"flex", alignItems:"center", gap:"12px" }}>
+          <div style={{ fontSize:"11px", color:"#6E6E73" }}>{user.email}</div>
+          <button
+            onClick={() => supabase.auth.signOut()}
+            style={{ background:"#252528", border:"1px solid #333336", color:"#F0F0F0", borderRadius:"8px", padding:"6px 12px", fontSize:"12px", cursor:"pointer", fontWeight:"600" }}
+          >
+            Wyloguj
+          </button>
           {syncStatus && (
             <div style={{ display:"flex", alignItems:"center", gap:"5px", fontSize:"11px", animation:"fadein 0.2s ease",
               color: syncStatus==="error" ? "#FF6B6B" : syncStatus==="saving" ? "#6E6E73" : "#AEEF6B" }}>
@@ -256,7 +429,10 @@ export default function App() {
           )}
           <div style={{ display:"flex", gap:"4px" }}>
             {["calendar","settings"].map(v => (
-              <button key={v} className="tab-btn" onClick={() => setView(v)} style={{
+              <button key={v} className="tab-btn" onClick={() => {
+                if (v === "settings") setSettingsForm({ ...settings });
+                setView(v);
+              }} style={{
                 background: view===v ? "#AEEF6B" : "transparent",
                 color: view===v ? "#111113" : "#A0A0A5",
                 border:"none", borderRadius:"8px", padding:"6px 14px",
