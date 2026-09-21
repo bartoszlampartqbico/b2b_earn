@@ -48,6 +48,28 @@ klucze obce na nową tabelę. Żaden wiersz z danymi nie jest kopiowany, zmienia
    (ciasteczko `Secure`); za reverse proxy ustaw `TRUST_PROXY=1`.
 7. **Sprawdź** logowanie i czy widać dotychczasowe wpisy.
 
+## Wdrożenie na Vercelu
+
+Vercel domyślnie serwuje tylko statyczny `dist/`, więc backend działa tam jako funkcja serverless:
+`api/index.js` re-eksportuje aplikację Express z `src/server/app.js`, a `vercel.json` kieruje
+`/api/*` do tej funkcji. Bez tego `/api/...` zwraca 404, a frontend pokazuje „Błąd połączenia z serwerem”.
+
+Zmienne środowiskowe (Project → Settings → Environment Variables, dla środowiska Production):
+
+| Zmienna | Wartość |
+|---|---|
+| `DATABASE_URL` | connection string **Transaction pooler** z Supabase (Connect → Transaction pooler, port **6543**) |
+| `SESSION_SECRET` | min. 32 znaki (ten sam, co lokalnie, albo nowy — zmiana wylogowuje wszystkich) |
+| `TRUST_PROXY` | `1` |
+
+- Transaction pooler jest właściwy dla serverless: wiele krótkich instancji nie wyczerpuje limitu połączeń.
+  Migracji (`npm run db:migrate`) i skryptu haseł uruchamianych lokalnie używaj z Session poolerem (port 5432).
+- Po zmianie zmiennych trzeba zrobić **redeploy** — działający deployment ich nie odświeży.
+- `NODE_ENV=production` Vercel ustawia sam (ciasteczko dostaje flagę `Secure`).
+- Weryfikacja po wdrożeniu: `https://TWOJA-DOMENA/api/auth/me` powinno zwrócić **401** i `{"error":"Brak sesji"}`.
+  Wynik 404 oznacza, że funkcja nie została wdrożona (sprawdź, czy `api/` i `vercel.json` są w repozytorium).
+- Limiter prób logowania jest w pamięci pojedynczej instancji, więc na serverless działa tylko częściowo.
+
 ## Sprzątanie po Supabase (dopiero gdy wszystko działa)
 
 - Klucz `anon` był zapisany w kodzie w historii gita. Frontend go już nie używa. Dopóki RLS jest włączone,
