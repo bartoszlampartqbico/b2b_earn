@@ -5,13 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "server": "node --env-file=.env --watch src/server/index.js",
-    "start": "node --env-file=.env src/server/index.js",
+    "server": "node --env-file-if-exists=.env --watch src/server/index.js",
+    "start": "node --env-file-if-exists=.env src/server/index.js",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "db:migrate": "node --env-file=.env src/server/scripts/migrate.js",
-    "user:password": "node --env-file=.env src/server/scripts/set-password.js"
+    "db:migrate": "node --env-file-if-exists=.env src/server/scripts/migrate.js",
+    "user:password": "node --env-file-if-exists=.env src/server/scripts/set-password.js"
   },
   "dependencies": {
     "cookie-parser": "^1.4.7",
