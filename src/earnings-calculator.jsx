@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import * as api from "./api";
+import { polishHolidays } from "./holidays";
 
 const DEFAULT_SETTINGS = {
   hourlyRate: 150,
@@ -10,6 +11,14 @@ const DEFAULT_SETTINGS = {
 
 const MONTHS_PL = ["Styczeń","Luty","Marzec","Kwiecień","Maj","Czerwiec","Lipiec","Sierpień","Wrzesień","Październik","Listopad","Grudzień"];
 const DAYS_PL = ["Pn","Wt","Śr","Cz","Pt","Sb","Nd"];
+
+// Kolory dni kalendarza. Dzień przepracowany (zielony) ma pierwszeństwo przed świętem/weekendem.
+const DAY_TONES = {
+  worked:  { bg:"rgba(174,239,107,0.08)", border:"rgba(174,239,107,0.25)" },
+  holiday: { bg:"rgba(255,107,107,0.09)", border:"rgba(255,107,107,0.22)", num:"#D98080" },
+  saturday:{ bg:"rgba(255,204,0,0.08)",   border:"rgba(255,204,0,0.20)",   num:"#CFAE4A" },
+  none:    { bg:"#111113",                border:"#222225",                num:"#A0A0A5" },
+};
 
 // --- Utils ---
 function getDaysInMonth(year, month) { return new Date(year, month + 1, 0).getDate(); }
@@ -182,6 +191,7 @@ export default function App() {
 
   const daysInMonth = getDaysInMonth(currentDate.year, currentDate.month);
   const firstDay = getFirstDayOfMonth(currentDate.year, currentDate.month);
+  const holidays = polishHolidays(currentDate.year);
   const calendarCells = [];
   for (let i = 0; i < firstDay; i++) calendarCells.push(null);
   for (let d = 1; d <= daysInMonth; d++) calendarCells.push(d);
@@ -368,7 +378,7 @@ export default function App() {
           <div style={{ background:"#1C1C1E", border:"1px solid #2C2C2E", borderRadius:"20px", padding:"20px" }}>
             <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:"4px", marginBottom:"8px" }}>
               {DAYS_PL.map(d => (
-                <div key={d} style={{ textAlign:"center", fontSize:"11px", fontWeight:"600", color: d==="Sb"||d==="Nd" ? "#555558" : "#6E6E73", padding:"4px 0", textTransform:"uppercase", letterSpacing:"0.5px" }}>{d}</div>
+                <div key={d} style={{ textAlign:"center", fontSize:"11px", fontWeight:"600", color: d==="Sb" ? "#A68F3F" : d==="Nd" ? "#A85F5F" : "#6E6E73", padding:"4px 0", textTransform:"uppercase", letterSpacing:"0.5px" }}>{d}</div>
               ))}
             </div>
             <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:"4px" }}>
@@ -377,16 +387,21 @@ export default function App() {
                 const key = getDateKey(currentDate.year, currentDate.month, day);
                 const entry = days[key];
                 const earnings = entry ? entry.hours * entry.rate : 0;
-                const isWknd = (firstDay + day - 1) % 7 >= 5;
+                const weekday = (firstDay + day - 1) % 7; // 0 = Pn ... 5 = Sb, 6 = Nd
+                const holidayName = holidays.get(key);
+                const tone = entry ? DAY_TONES.worked
+                  : weekday === 6 || holidayName ? DAY_TONES.holiday
+                  : weekday === 5 ? DAY_TONES.saturday
+                  : DAY_TONES.none;
                 const isTd = isToday(day);
                 return (
-                  <button key={day} className="day-cell" onClick={() => openEditDay(day)} style={{
-                    background: entry ? "rgba(174,239,107,0.08)" : "#111113",
-                    border: isTd ? "2px solid #AEEF6B" : entry ? "1px solid rgba(174,239,107,0.25)" : "1px solid #222225",
+                  <button key={day} className="day-cell" title={holidayName} onClick={() => openEditDay(day)} style={{
+                    background: tone.bg,
+                    border: isTd ? "2px solid #AEEF6B" : `1px solid ${tone.border}`,
                     borderRadius:"12px", padding:"8px 4px 6px", cursor:"pointer", transition:"background 0.1s",
                     minHeight:"64px", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"space-between",
                   }}>
-                    <span style={{ fontSize:"13px", fontWeight: isTd?"800":"500", color: isTd?"#AEEF6B":isWknd?"#555558":"#A0A0A5" }}>{day}</span>
+                    <span style={{ fontSize:"13px", fontWeight: isTd?"800":"500", color: isTd ? "#AEEF6B" : entry ? DAY_TONES.none.num : tone.num }}>{day}</span>
                     {entry ? (
                       <div style={{ textAlign:"center" }}>
                         <div style={{ fontSize:"11px", fontWeight:"700", color:"#AEEF6B" }}>{entry.hours}h</div>
