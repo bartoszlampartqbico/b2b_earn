@@ -5,12 +5,19 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "server": "node --env-file=.env --watch src/server/index.js",
+    "start": "node --env-file=.env src/server/index.js",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "db:migrate": "node --env-file=.env src/server/scripts/migrate.js",
+    "user:password": "node --env-file=.env src/server/scripts/set-password.js"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.108.2",
+    "cookie-parser": "^1.4.7",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
+    "pg": "^8.23.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6"
   },

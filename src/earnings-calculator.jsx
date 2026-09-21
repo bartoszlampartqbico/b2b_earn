@@ -1,9 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { createClient } from "@supabase/supabase-js";
-
-const SUPABASE_URL = "https://znsokxakmlviikvniftf.supabase.co";
-const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpuc29reGFrbWx2aWlrdm5pZnRmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIxNjk2MTAsImV4cCI6MjA5Nzc0NTYxMH0.Cp8KcXLpksUbVjbwmgYWWKPTMVQ6_eqtzkKJspua27M";
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+import * as api from "./api";
 
 const DEFAULT_SETTINGS = {
   hourlyRate: 150,
@@ -14,111 +10,6 @@ const DEFAULT_SETTINGS = {
 
 const MONTHS_PL = ["Styczeń","Luty","Marzec","Kwiecień","Maj","Czerwiec","Lipiec","Sierpień","Wrzesień","Październik","Listopad","Grudzień"];
 const DAYS_PL = ["Pn","Wt","Śr","Cz","Pt","Sb","Nd"];
-
-async function fetchCurrentUser() {
-  const { data, error } = await supabase.auth.getSession();
-  if (error) throw error;
-  return data.session?.user ?? null;
-}
-
-async function loadSettings(userId) {
-  const { data, error } = await supabase
-    .from("earnings_settings")
-    .select("id, hourly_rate, tax_rate, zus_amount, currency")
-    .eq("user_id", userId)
-    .maybeSingle();
-
-  if (error) throw error;
-  if (!data) return null;
-  return { hourlyRate: data.hourly_rate, taxRate: data.tax_rate, zusAmount: data.zus_amount, currency: data.currency };
-}
-
-async function saveSettings(userId, s) {
-  const { data: existing, error: readError } = await supabase
-    .from("earnings_settings")
-    .select("id")
-    .eq("user_id", userId)
-    .maybeSingle();
-
-  if (readError) throw readError;
-
-  if (existing) {
-    const { error } = await supabase
-      .from("earnings_settings")
-      .update({
-        hourly_rate: s.hourlyRate,
-        tax_rate: s.taxRate,
-        zus_amount: s.zusAmount,
-        currency: s.currency,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("user_id", userId);
-
-    if (error) throw error;
-    return;
-  }
-
-  const { error } = await supabase.from("earnings_settings").insert({
-    id: userId,
-    user_id: userId,
-    hourly_rate: s.hourlyRate,
-    tax_rate: s.taxRate,
-    zus_amount: s.zusAmount,
-    currency: s.currency,
-    updated_at: new Date().toISOString(),
-  });
-
-  if (error) throw error;
-}
-
-async function loadDays(userId) {
-  const { data, error } = await supabase
-    .from("earnings_days")
-    .select("date_key, hours, rate")
-    .eq("user_id", userId);
-
-  if (error) throw error;
-  const map = {};
-  if (data) data.forEach(r => { map[r.date_key] = { hours: r.hours, rate: r.rate }; });
-  return map;
-}
-
-async function upsertDay(userId, dateKey, hours, rate) {
-  const { data: existing, error: readError } = await supabase
-    .from("earnings_days")
-    .select("date_key")
-    .eq("user_id", userId)
-    .eq("date_key", dateKey)
-    .maybeSingle();
-
-  if (readError) throw readError;
-
-  if (existing) {
-    const { error } = await supabase
-      .from("earnings_days")
-      .update({ hours, rate, updated_at: new Date().toISOString() })
-      .eq("user_id", userId)
-      .eq("date_key", dateKey);
-
-    if (error) throw error;
-    return;
-  }
-
-  const { error } = await supabase.from("earnings_days").insert({
-    user_id: userId,
-    date_key: dateKey,
-    hours,
-    rate,
-    updated_at: new Date().toISOString(),
-  });
-
-  if (error) throw error;
-}
-
-async function deleteDay(userId, dateKey) {
-  const { error } = await supabase.from("earnings_days").delete().eq("user_id", userId).eq("date_key", dateKey);
-  if (error) throw error;
-}
 
 // --- Utils ---
 function getDaysInMonth(year, month) { return new Date(year, month + 1, 0).getDate(); }
@@ -134,7 +25,7 @@ export default function App() {
   const [loadState, setLoadState] = useState("loading");
   const [syncStatus, setSyncStatus] = useState(null);
   const [user, setUser] = useState(null);
-  const [authForm, setAuthForm] = useState({ email: "", loading: false, message: "" });
+  const [authForm, setAuthForm] = useState({ email: "", password: "", loading: false, message: "" });
 
   const [view, setView] = useState("calendar");
   const [currentDate, setCurrentDate] = useState(() => {
@@ -146,66 +37,69 @@ export default function App() {
   const [editRate, setEditRate] = useState("");
   const [settingsForm, setSettingsForm] = useState(null);
 
+  const loadUserData = useCallback(async () => {
+    const [s, d] = await Promise.all([api.loadSettings(), api.loadDays()]);
+    setSettings(s ?? DEFAULT_SETTINGS);
+    setDays(d ?? {});
+  }, []);
+
   useEffect(() => {
     let active = true;
 
     async function load() {
       try {
-        const currentUser = await fetchCurrentUser();
+        const currentUser = await api.fetchCurrentUser();
         if (!active) return;
         setUser(currentUser);
-        if (!currentUser) {
-          setSettings(DEFAULT_SETTINGS);
-          setDays({});
-          setLoadState("ready");
-          return;
-        }
-
-        const [s, d] = await Promise.all([loadSettings(currentUser.id), loadDays(currentUser.id)]);
+        if (currentUser) await loadUserData();
         if (!active) return;
-        if (s) setSettings(s);
-        if (d) setDays(d);
-        setLoadState("ready");
-      } catch {
-        if (!active) return;
-        setUser(null);
-        setSettings(DEFAULT_SETTINGS);
-        setDays({});
-        setLoadState("ready");
-      }
-    }
-    load();
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      if (!active) return;
-      const currentUser = session?.user ?? null;
-      setUser(currentUser);
-
-      if (!currentUser) {
-        setSettings(DEFAULT_SETTINGS);
-        setDays({});
-        setLoadState("ready");
-        return;
-      }
-
-      setLoadState("loading");
-      try {
-        const [s, d] = await Promise.all([loadSettings(currentUser.id), loadDays(currentUser.id)]);
-        if (!active) return;
-        setSettings(s ?? DEFAULT_SETTINGS);
-        setDays(d ?? {});
         setLoadState("ready");
       } catch {
         if (!active) return;
         setLoadState("error");
       }
-    });
+    }
+    load();
 
-    return () => {
-      active = false;
-      subscription.unsubscribe();
-    };
-  }, []);
+    return () => { active = false; };
+  }, [loadUserData]);
+
+  const handleLogin = async () => {
+    const email = authForm.email.trim();
+    if (!email || !authForm.password) {
+      setAuthForm(f => ({ ...f, message: "Podaj email i hasło." }));
+      return;
+    }
+
+    setAuthForm(f => ({ ...f, loading: true, message: "" }));
+    let loggedIn;
+    try {
+      loggedIn = await api.login(email, authForm.password);
+    } catch (err) {
+      setAuthForm(f => ({ ...f, loading: false, message: err.message }));
+      return;
+    }
+
+    setAuthForm({ email: "", password: "", loading: false, message: "" });
+    setLoadState("loading");
+    setUser(loggedIn);
+    try {
+      await loadUserData();
+      setLoadState("ready");
+    } catch {
+      setLoadState("error");
+    }
+  };
+
+  const handleLogout = async () => {
+    try { await api.logout(); } catch { /* sesja i tak wygaśnie; czyścimy stan lokalnie */ }
+    setUser(null);
+    setSettings(DEFAULT_SETTINGS);
+    setDays({});
+    setEditingDay(null);
+    setSettingsForm(null);
+    setView("calendar");
+  };
 
   const withSync = useCallback(async (fn) => {
     if (!user) {
@@ -218,7 +112,8 @@ export default function App() {
       await fn();
       setSyncStatus("saved");
       setTimeout(() => setSyncStatus(null), 2000);
-    } catch {
+    } catch (err) {
+      if (err.status === 401) { setUser(null); return; }
       setSyncStatus("error");
       setTimeout(() => setSyncStatus(null), 4000);
     }
@@ -243,18 +138,18 @@ export default function App() {
     setEditingDay(null);
     if (h === 0) {
       setDays(prev => { const n = { ...prev }; delete n[key]; return n; });
-      await withSync(() => deleteDay(user.id, key));
+      await withSync(() => api.deleteDay(key));
     } else {
       const rate = isNaN(r) || r <= 0 ? settings.hourlyRate : r;
       setDays(prev => ({ ...prev, [key]: { hours: h, rate } }));
-      await withSync(() => upsertDay(user.id, key, h, rate));
+      await withSync(() => api.upsertDay(key, h, rate));
     }
   };
 
   const removeDayImmediate = async (key) => {
     setEditingDay(null);
     setDays(prev => { const n = { ...prev }; delete n[key]; return n; });
-    await withSync(() => deleteDay(user.id, key));
+    await withSync(() => api.deleteDay(key));
   };
 
   const handleSaveSettings = async () => {
@@ -265,7 +160,7 @@ export default function App() {
     const ns = { ...settings, hourlyRate: hr, taxRate: Math.max(0, Math.min(100, tr)), zusAmount: zu };
     setSettings(ns);
     setView("calendar");
-    await withSync(() => saveSettings(user.id, ns));
+    await withSync(() => api.saveSettings(ns));
   };
 
   const monthStats = useCallback(() => {
@@ -303,8 +198,8 @@ export default function App() {
   if (loadState === "error") return (
     <div style={{ minHeight:"100vh", background:"#111113", display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", gap:"12px", fontFamily:"'Inter',system-ui,sans-serif", color:"#FF6B6B", padding:"24px", textAlign:"center" }}>
       <div style={{ fontSize:"32px" }}>⚠</div>
-      <div style={{ fontSize:"16px", fontWeight:"700" }}>Błąd połączenia z Supabase</div>
-      <div style={{ fontSize:"13px", color:"#6E6E73", maxWidth:"300px" }}>Sprawdź konfigurację auth i tabele oraz upewnij się, że użytkownik jest zalogowany.</div>
+      <div style={{ fontSize:"16px", fontWeight:"700" }}>Błąd połączenia z serwerem</div>
+      <div style={{ fontSize:"13px", color:"#6E6E73", maxWidth:"300px" }}>Nie udało się pobrać danych. Sprawdź, czy serwer działa, i spróbuj ponownie.</div>
       <button onClick={() => { setLoadState("loading"); location.reload(); }} style={{ marginTop:"8px", background:"#AEEF6B", border:"none", borderRadius:"10px", padding:"10px 20px", fontWeight:"700", cursor:"pointer", fontSize:"13px" }}>Spróbuj ponownie</button>
     </div>
   );
@@ -328,11 +223,15 @@ export default function App() {
             </div>
           </div>
 
-          <div style={{ display:"grid", gap:"14px" }}>
+          <form
+            onSubmit={e => { e.preventDefault(); handleLogin(); }}
+            style={{ display:"grid", gap:"14px" }}
+          >
             <div>
               <label style={{ display:"block", fontSize:"12px", textTransform:"uppercase", letterSpacing:"0.8px", color:"#6E6E73", fontWeight:"600", marginBottom:"6px" }}>Email</label>
               <input
                 type="email"
+                autoComplete="username"
                 value={authForm.email}
                 onChange={e => setAuthForm(f => ({ ...f, email: e.target.value }))}
                 placeholder="twoj@email.pl"
@@ -340,42 +239,31 @@ export default function App() {
               />
             </div>
 
-            <button
-              onClick={async () => {
-                if (!authForm.email.trim()) {
-                  setAuthForm(f => ({ ...f, message: "Podaj adres email." }));
-                  return;
-                }
+            <div>
+              <label style={{ display:"block", fontSize:"12px", textTransform:"uppercase", letterSpacing:"0.8px", color:"#6E6E73", fontWeight:"600", marginBottom:"6px" }}>Hasło</label>
+              <input
+                type="password"
+                autoComplete="current-password"
+                value={authForm.password}
+                onChange={e => setAuthForm(f => ({ ...f, password: e.target.value }))}
+                style={{ width:"100%", background:"#111113", border:"1px solid #2C2C2E", borderRadius:"12px", padding:"14px", color:"#F0F0F0", fontSize:"15px", outline:"none" }}
+              />
+            </div>
 
-                setAuthForm(f => ({ ...f, loading: true, message: "" }));
-                const { error } = await supabase.auth.signInWithOtp({
-                  email: authForm.email.trim(),
-                  options: {
-                    emailRedirectTo: window.location.origin,
-                  },
-                });
-                setAuthForm(f => ({
-                  ...f,
-                  loading: false,
-                  message: error ? `Nie udało się wysłać linku: ${error.message}` : "Sprawdź skrzynkę i kliknij link logowania.",
-                }));
-              }}
+            <button
+              type="submit"
               disabled={authForm.loading}
               style={{ width:"100%", background:"#AEEF6B", border:"none", borderRadius:"12px", padding:"14px", fontSize:"15px", fontWeight:"800", color:"#111113", cursor:"pointer", opacity: authForm.loading ? 0.7 : 1 }}
             >
-              {authForm.loading ? "Wysyłam link…" : "Wyślij link logowania"}
+              {authForm.loading ? "Loguję…" : "Zaloguj się"}
             </button>
 
             {authForm.message && (
-              <div style={{ fontSize:"13px", color: authForm.message.startsWith("Nie udało się") ? "#FF6B6B" : "#AEEF6B", lineHeight:"1.4" }}>
+              <div style={{ fontSize:"13px", color:"#FF6B6B", lineHeight:"1.4" }}>
                 {authForm.message}
               </div>
             )}
-
-            <div style={{ fontSize:"12px", color:"#555558", lineHeight:"1.5" }}>
-              Po zalogowaniu każda osoba widzi tylko swoje wpisy dzięki RLS i kolumnie <span style={{ color:"#AEEF6B" }}>user_id</span>.
-            </div>
-          </div>
+          </form>
         </div>
       </div>
     );
@@ -407,13 +295,11 @@ export default function App() {
             <span style={{ fontSize:"13px", fontWeight:"900", color:"#111113" }}>zł</span>
           </div>
           <span style={{ fontWeight:"700", fontSize:"15px", letterSpacing:"-0.3px" }}>Zarobki</span>
-          <div style={{ width:"1px", height:"16px", background:"#2C2C2E", margin:"0 4px" }} />
-          <span style={{ fontSize:"11px", color:"#3A3A3C", fontWeight:"500" }}>Supabase</span>
         </div>
         <div style={{ display:"flex", alignItems:"center", gap:"12px" }}>
           <div style={{ fontSize:"11px", color:"#6E6E73" }}>{user.email}</div>
           <button
-            onClick={() => supabase.auth.signOut()}
+            onClick={handleLogout}
             style={{ background:"#252528", border:"1px solid #333336", color:"#F0F0F0", borderRadius:"8px", padding:"6px 12px", fontSize:"12px", cursor:"pointer", fontWeight:"600" }}
           >
             Wyloguj
