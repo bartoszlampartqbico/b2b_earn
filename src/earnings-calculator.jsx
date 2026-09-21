@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import * as api from "./api";
 import { polishHolidays } from "./holidays";
+import { monthHoursStats, WORKDAY_HOURS } from "./work-hours";
 
 const DEFAULT_SETTINGS = {
   hourlyRate: 150,
@@ -192,6 +193,10 @@ export default function App() {
   const daysInMonth = getDaysInMonth(currentDate.year, currentDate.month);
   const firstDay = getFirstDayOfMonth(currentDate.year, currentDate.month);
   const holidays = polishHolidays(currentDate.year);
+  const hours = monthHoursStats(
+    currentDate.year, currentDate.month, days, holidays,
+    getDateKey(today.getFullYear(), today.getMonth(), today.getDate()),
+  );
   const calendarCells = [];
   for (let i = 0; i < firstDay; i++) calendarCells.push(null);
   for (let d = 1; d <= daysInMonth; d++) calendarCells.push(d);
@@ -413,6 +418,27 @@ export default function App() {
                   </button>
                 );
               })}
+            </div>
+          </div>
+
+          {/* Hours summary */}
+          <div style={{ marginTop:"20px", background:"#1C1C1E", border:"1px solid #2C2C2E", borderRadius:"20px", padding:"20px" }}>
+            <div style={{ fontSize:"11px", fontWeight:"500", color:"#6E6E73", textTransform:"uppercase", letterSpacing:"1px", marginBottom:"12px" }}>
+              Godziny w miesiącu
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))", gap:"12px" }}>
+              {[
+                { label:"Godziny robocze", value:`${hours.workingHours}h`, sub:`${hours.workingDays} dni × ${WORKDAY_HOURS}h`, color:"#F0F0F0" },
+                { label:"Przepracowane", value:`${hours.workedHours}h`, sub:"łącznie w miesiącu", color:"#AEEF6B" },
+                { label:"Wolne", value:`${hours.offHours}h`, sub:`${hours.daysOff} dni robocze bez pracy`, color:"#CFAE4A" },
+                { label:"Nadgodziny", value:`${hours.overtime}h`, sub:"ponad normę + weekendy i święta", color:"#FFB347" },
+              ].map(item => (
+                <div key={item.label} style={{ background:"#111113", borderRadius:"12px", padding:"12px", border:"1px solid #2C2C2E" }}>
+                  <div style={{ fontSize:"10px", color:"#6E6E73", fontWeight:"500", textTransform:"uppercase", letterSpacing:"0.8px", marginBottom:"4px" }}>{item.label}</div>
+                  <div style={{ fontSize:"18px", fontWeight:"800", color:item.color }}>{item.value}</div>
+                  <div style={{ fontSize:"10px", color:"#555558", marginTop:"2px", lineHeight:"1.3" }}>{item.sub}</div>
+                </div>
+              ))}
             </div>
           </div>
         </div>

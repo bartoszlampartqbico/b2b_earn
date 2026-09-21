@@ -1,7 +1,7 @@
 // Polskie dni ustawowo wolne od pracy. Ruchome święta liczone od Wielkanocy, więc działa dla dowolnego roku.
 
 const pad = (n) => String(n).padStart(2, "0");
-const toKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+export const toKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 
 // Wielkanoc (kalendarz gregoriański, algorytm Meeusa/Jonesa/Butchera).
 function easterSunday(year) {
