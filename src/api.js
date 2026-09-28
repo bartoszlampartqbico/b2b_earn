@@ -55,3 +55,19 @@ export function upsertDay(dateKey, hours, rate) {
 export function deleteDay(dateKey) {
   return request("DELETE", `/days/${dateKey}`);
 }
+
+export async function loadExtraIncome() {
+  return (await request("GET", "/extra-income")).items;
+}
+
+export async function createExtraIncome(item) {
+  return (await request("POST", "/extra-income", item)).item;
+}
+
+export function updateExtraIncome(id, item) {
+  return request("PUT", `/extra-income/${id}`, item);
+}
+
+export function deleteExtraIncome(id) {
+  return request("DELETE", `/extra-income/${id}`);
+}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import * as api from "./api";
 import { polishHolidays } from "./holidays";
 import { monthHoursStats, WORKDAY_HOURS } from "./work-hours";
@@ -12,6 +12,17 @@ const DEFAULT_SETTINGS = {
 
 const MONTHS_PL = ["Styczeń","Luty","Marzec","Kwiecień","Maj","Czerwiec","Lipiec","Sierpień","Wrzesień","Październik","Listopad","Grudzień"];
 const DAYS_PL = ["Pn","Wt","Śr","Cz","Pt","Sb","Nd"];
+
+// Stawki VAT dla dodatkowych przychodów; "zw" = zwolniony (bez VAT).
+const VAT_RATES = [
+  { value:"23", label:"23%" },
+  { value:"8",  label:"8%" },
+  { value:"5",  label:"5%" },
+  { value:"0",  label:"0%" },
+  { value:"zw", label:"zw." },
+];
+const vatPercent = (rate) => rate === "zw" ? 0 : Number(rate);
+const vatLabel = (rate) => VAT_RATES.find(v => v.value === rate)?.label ?? rate;
 
 // Kolory dni kalendarza. Dzień przepracowany (zielony) ma pierwszeństwo przed świętem/weekendem.
 const DAY_TONES = {
@@ -46,11 +57,14 @@ export default function App() {
   const [editHours, setEditHours] = useState("");
   const [editRate, setEditRate] = useState("");
   const [settingsForm, setSettingsForm] = useState(null);
+  const [extraIncome, setExtraIncome] = useState([]);
+  const [editingExtra, setEditingExtra] = useState(null); // { id|null, description, netAmount, vatRate }
 
   const loadUserData = useCallback(async () => {
-    const [s, d] = await Promise.all([api.loadSettings(), api.loadDays()]);
+    const [s, d, e] = await Promise.all([api.loadSettings(), api.loadDays(), api.loadExtraIncome()]);
     setSettings(s ?? DEFAULT_SETTINGS);
     setDays(d ?? {});
+    setExtraIncome(e ?? []);
   }, []);
 
   useEffect(() => {
@@ -106,7 +120,9 @@ export default function App() {
     setUser(null);
     setSettings(DEFAULT_SETTINGS);
     setDays({});
+    setExtraIncome([]);
     setEditingDay(null);
+    setEditingExtra(null);
     setSettingsForm(null);
     setView("calendar");
   };
@@ -173,16 +189,50 @@ export default function App() {
     await withSync(() => api.saveSettings(ns));
   };
 
+  const monthKey = `${currentDate.year}-${String(currentDate.month + 1).padStart(2, "0")}`;
+  const monthExtras = useMemo(() => extraIncome.filter(e => e.month === monthKey), [extraIncome, monthKey]);
+
+  const openNewExtra = () => setEditingExtra({ id: null, description: "", netAmount: "", vatRate: "23" });
+  const openEditExtra = (e) => setEditingExtra({ id: e.id, description: e.description, netAmount: String(e.netAmount), vatRate: e.vatRate });
+
+  const saveExtra = async () => {
+    const netAmount = Math.round(parseFloat(editingExtra.netAmount) * 100) / 100;
+    if (isNaN(netAmount) || netAmount <= 0) return;
+    const { id } = editingExtra;
+    const item = { month: id ? extraIncome.find(e => e.id === id).month : monthKey, description: editingExtra.description.trim(), netAmount, vatRate: editingExtra.vatRate };
+    setEditingExtra(null);
+    if (id) {
+      setExtraIncome(prev => prev.map(e => e.id === id ? { ...e, ...item } : e));
+      await withSync(() => api.updateExtraIncome(id, item));
+    } else {
+      // Id nadaje baza, więc nowy wpis pojawia się dopiero po zapisie.
+      await withSync(async () => {
+        const created = await api.createExtraIncome(item);
+        setExtraIncome(prev => [...prev, created]);
+      });
+    }
+  };
+
+  const removeExtra = async (id) => {
+    setEditingExtra(null);
+    setExtraIncome(prev => prev.filter(e => e.id !== id));
+    await withSync(() => api.deleteExtraIncome(id));
+  };
+
   const monthStats = useCallback(() => {
     const { year, month } = currentDate;
-    let totalHours = 0, grossEarnings = 0;
+    let totalHours = 0, workEarnings = 0;
     for (let d = 1; d <= getDaysInMonth(year, month); d++) {
       const entry = days[getDateKey(year, month, d)];
-      if (entry) { totalHours += entry.hours; grossEarnings += entry.hours * entry.rate; }
+      if (entry) { totalHours += entry.hours; workEarnings += entry.hours * entry.rate; }
     }
+    // Dodatkowe przychody liczą się do przychodu kwotą netto; VAT jest tylko informacyjny (do odprowadzenia).
+    let extraNet = 0, extraVat = 0;
+    for (const e of monthExtras) { extraNet += e.netAmount; extraVat += e.netAmount * vatPercent(e.vatRate) / 100; }
+    const grossEarnings = workEarnings + extraNet;
     const tax = grossEarnings * (settings.taxRate / 100);
-    return { totalHours, grossEarnings, tax, net: Math.max(0, grossEarnings - tax - settings.zusAmount) };
-  }, [currentDate, days, settings]);
+    return { totalHours, workEarnings, extraNet, extraVat, grossEarnings, tax, net: Math.max(0, grossEarnings - tax - settings.zusAmount) };
+  }, [currentDate, days, settings, monthExtras]);
 
   const stats = monthStats();
   const prevMonth = () => setCurrentDate(d => d.month === 0 ? { year: d.year - 1, month: 11 } : { ...d, month: d.month - 1 });
@@ -376,6 +426,9 @@ export default function App() {
             </div>
             <div style={{ marginTop:"12px", textAlign:"center", fontSize:"12px", color:"#555558" }}>
               Przepracowano łącznie <span style={{ color:"#AEEF6B", fontWeight:"700" }}>{stats.totalHours}h</span>
+              {stats.extraNet > 0 && (
+                <> · dodatkowo <span style={{ color:"#7DB9FF", fontWeight:"700" }}>{fmt(stats.extraNet, settings.currency)}</span> netto</>
+              )}
             </div>
           </div>
 
@@ -419,6 +472,41 @@ export default function App() {
                 );
               })}
             </div>
+          </div>
+
+          {/* Extra income */}
+          <div style={{ marginTop:"20px", background:"#1C1C1E", border:"1px solid #2C2C2E", borderRadius:"20px", padding:"20px" }}>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: monthExtras.length ? "12px" : 0 }}>
+              <div style={{ fontSize:"11px", fontWeight:"500", color:"#6E6E73", textTransform:"uppercase", letterSpacing:"1px" }}>
+                Dodatkowe przychody
+              </div>
+              <button className="nav-btn" onClick={openNewExtra} style={{ background:"#252528", border:"1px solid #333336", borderRadius:"8px", color:"#F0F0F0", padding:"6px 12px", fontSize:"12px", fontWeight:"600", cursor:"pointer" }}>
+                + Dodaj
+              </button>
+            </div>
+            {monthExtras.length > 0 && (
+              <div style={{ display:"flex", flexDirection:"column", gap:"6px" }}>
+                {monthExtras.map(e => {
+                  const vat = e.netAmount * vatPercent(e.vatRate) / 100;
+                  return (
+                    <button key={e.id} className="day-cell" onClick={() => openEditExtra(e)} style={{ background:"#111113", border:"1px solid #2C2C2E", borderRadius:"12px", padding:"10px 12px", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"space-between", gap:"12px", textAlign:"left", color:"#F0F0F0" }}>
+                      <div style={{ minWidth:0 }}>
+                        <div style={{ fontSize:"13px", fontWeight:"600", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{e.description || "Bez opisu"}</div>
+                        <div style={{ fontSize:"10px", color:"#6E6E73", marginTop:"2px" }}>
+                          VAT {vatLabel(e.vatRate)}{vat > 0 && ` · ${fmt(vat, "")}`} · brutto {fmt(e.netAmount + vat, "")}
+                        </div>
+                      </div>
+                      <div style={{ fontSize:"14px", fontWeight:"700", color:"#7DB9FF", whiteSpace:"nowrap" }}>{fmt(e.netAmount, settings.currency)}</div>
+                    </button>
+                  );
+                })}
+                <div style={{ display:"flex", flexDirection:"column", gap:"4px", borderTop:"1px solid #2C2C2E", paddingTop:"8px", marginTop:"4px" }}>
+                  <Row label="Razem netto" value={fmt(stats.extraNet, settings.currency)} color="#7DB9FF" bold />
+                  <Row label="VAT należny" value={fmt(stats.extraVat, settings.currency)} />
+                  <Row label="Razem brutto" value={fmt(stats.extraNet + stats.extraVat, settings.currency)} />
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Hours summary */}
@@ -531,6 +619,72 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Extra income modal */}
+      {editingExtra && (() => {
+        const net = parseFloat(editingExtra.netAmount);
+        const vat = net > 0 ? net * vatPercent(editingExtra.vatRate) / 100 : 0;
+        const labelStyle = { fontSize:"11px", color:"#6E6E73", fontWeight:"600", textTransform:"uppercase", letterSpacing:"0.8px", display:"block", marginBottom:"6px" };
+        const inputStyle = { width:"100%", background:"#111113", border:"1px solid #2C2C2E", borderRadius:"10px", padding:"12px 14px", color:"#F0F0F0", fontSize:"15px", fontWeight:"600", transition:"border-color 0.15s" };
+        return (
+          <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.7)", display:"flex", alignItems:"flex-end", justifyContent:"center", zIndex:100, backdropFilter:"blur(4px)" }}
+            onClick={e => { if (e.target===e.currentTarget) setEditingExtra(null); }}>
+            <form onSubmit={e => { e.preventDefault(); saveExtra(); }} style={{ background:"#1C1C1E", borderRadius:"20px 20px 0 0", padding:"24px", width:"100%", maxWidth:"480px", border:"1px solid #2C2C2E", borderBottom:"none", animation:"slideup 0.2s ease" }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"20px" }}>
+                <div>
+                  <div style={{ fontSize:"16px", fontWeight:"800", letterSpacing:"-0.3px" }}>{editingExtra.id ? "Edytuj przychód" : "Dodatkowy przychód"}</div>
+                  <div style={{ fontSize:"12px", color:"#6E6E73", marginTop:"2px" }}>{MONTHS_PL[currentDate.month]} {currentDate.year}</div>
+                </div>
+                <button type="button" className="close-btn" onClick={() => setEditingExtra(null)} style={{ background:"#252528", border:"1px solid #333336", borderRadius:"10px", color:"#A0A0A5", width:"32px", height:"32px", cursor:"pointer", fontSize:"16px", display:"flex", alignItems:"center", justifyContent:"center" }}>×</button>
+              </div>
+              <div style={{ marginBottom:"12px" }}>
+                <label style={labelStyle}>Opis</label>
+                <input className="input-field" type="text" maxLength={200} placeholder="np. Szkolenie, licencja…"
+                  value={editingExtra.description} onChange={e => setEditingExtra(x => ({ ...x, description: e.target.value }))}
+                  style={inputStyle} />
+              </div>
+              <div style={{ marginBottom:"12px" }}>
+                <label style={labelStyle}>Kwota netto (PLN)</label>
+                <input className="input-field" type="number" min="0" step="0.01" placeholder="0" autoFocus
+                  value={editingExtra.netAmount} onChange={e => setEditingExtra(x => ({ ...x, netAmount: e.target.value }))}
+                  style={{ ...inputStyle, fontSize:"18px", fontWeight:"700" }} />
+              </div>
+              <div style={{ marginBottom:"16px" }}>
+                <label style={labelStyle}>Stawka VAT</label>
+                <div style={{ display:"grid", gridTemplateColumns:`repeat(${VAT_RATES.length},1fr)`, gap:"6px" }}>
+                  {VAT_RATES.map(v => {
+                    const active = editingExtra.vatRate === v.value;
+                    return (
+                      <button key={v.value} type="button" onClick={() => setEditingExtra(x => ({ ...x, vatRate: v.value }))} style={{
+                        background: active ? "#AEEF6B" : "#111113", color: active ? "#111113" : "#A0A0A5",
+                        border: `1px solid ${active ? "#AEEF6B" : "#2C2C2E"}`, borderRadius:"10px", padding:"10px 0",
+                        fontSize:"13px", fontWeight:"700", cursor:"pointer",
+                      }}>{v.label}</button>
+                    );
+                  })}
+                </div>
+              </div>
+              {net > 0 && (
+                <div style={{ background:"rgba(174,239,107,0.06)", border:"1px solid rgba(174,239,107,0.2)", borderRadius:"10px", padding:"10px 14px", marginBottom:"16px", display:"flex", flexDirection:"column", gap:"4px" }}>
+                  <Row label="Netto" value={fmt(net)} />
+                  <Row label={`VAT ${vatLabel(editingExtra.vatRate)}`} value={fmt(vat)} />
+                  <Row label="Brutto (na fakturze)" value={fmt(net + vat)} color="#AEEF6B" bold />
+                </div>
+              )}
+              <div style={{ display:"grid", gridTemplateColumns: editingExtra.id ? "1fr 1fr" : "1fr", gap:"10px" }}>
+                {editingExtra.id && (
+                  <button type="button" className="del-btn" onClick={() => removeExtra(editingExtra.id)} style={{ background:"transparent", border:"1px solid rgba(255,107,107,0.2)", borderRadius:"12px", padding:"12px", fontSize:"14px", fontWeight:"600", color:"#FF6B6B", cursor:"pointer", transition:"background 0.15s" }}>
+                    Usuń
+                  </button>
+                )}
+                <button type="submit" className="save-btn" style={{ background:"#AEEF6B", border:"none", borderRadius:"12px", padding:"12px", fontSize:"14px", fontWeight:"700", color:"#111113", cursor:"pointer", transition:"background 0.15s" }}>
+                  Zapisz
+                </button>
+              </div>
+            </form>
+          </div>
+        );
+      })()}
     </div>
   );
 }

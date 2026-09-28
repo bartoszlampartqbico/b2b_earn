@@ -80,4 +80,67 @@ router.delete("/days/:dateKey", async (req, res) => {
   res.status(204).end();
 });
 
+// --- Dodatkowe przychody (per miesiąc, z własną stawką VAT) ---
+
+const MONTH_KEY_RE = /^\d{4}-\d{2}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const VAT_RATES = ["23", "8", "5", "0", "zw"];
+
+const toExtraIncome = (r) => ({
+  id: r.id,
+  month: r.month_key,
+  description: r.description,
+  netAmount: Number(r.net_amount),
+  vatRate: r.vat_rate,
+});
+
+function parseExtraIncome(body) {
+  const { month, description = "", netAmount, vatRate } = body ?? {};
+  if (typeof month !== "string" || !MONTH_KEY_RE.test(month)) return null;
+  if (typeof description !== "string" || description.length > 200) return null;
+  if (!isNum(netAmount) || netAmount <= 0 || netAmount >= 1e10) return null;
+  if (!VAT_RATES.includes(vatRate)) return null;
+  return { month, description: description.trim(), netAmount, vatRate };
+}
+
+router.get("/extra-income", async (req, res) => {
+  const { rows } = await query(
+    `select id, month_key, description, net_amount, vat_rate from earnings_extra_income
+     where user_id = $1 order by created_at`,
+    [req.user.id],
+  );
+  res.json({ items: rows.map(toExtraIncome) });
+});
+
+router.post("/extra-income", async (req, res) => {
+  const e = parseExtraIncome(req.body);
+  if (!e) return res.status(400).json({ error: "Nieprawidłowy przychód." });
+  const { rows } = await query(
+    `insert into earnings_extra_income (user_id, month_key, description, net_amount, vat_rate)
+     values ($1, $2, $3, $4, $5)
+     returning id, month_key, description, net_amount, vat_rate`,
+    [req.user.id, e.month, e.description, e.netAmount, e.vatRate],
+  );
+  res.status(201).json({ item: toExtraIncome(rows[0]) });
+});
+
+router.put("/extra-income/:id", async (req, res) => {
+  const e = parseExtraIncome(req.body);
+  if (!UUID_RE.test(req.params.id) || !e) return res.status(400).json({ error: "Nieprawidłowy przychód." });
+  const { rowCount } = await query(
+    `update earnings_extra_income set
+       month_key = $3, description = $4, net_amount = $5, vat_rate = $6, updated_at = now()
+     where id = $1 and user_id = $2`,
+    [req.params.id, req.user.id, e.month, e.description, e.netAmount, e.vatRate],
+  );
+  if (!rowCount) return res.status(404).json({ error: "Nie znaleziono" });
+  res.status(204).end();
+});
+
+router.delete("/extra-income/:id", async (req, res) => {
+  if (!UUID_RE.test(req.params.id)) return res.status(400).json({ error: "Nieprawidłowy identyfikator." });
+  await query("delete from earnings_extra_income where id = $1 and user_id = $2", [req.params.id, req.user.id]);
+  res.status(204).end();
+});
+
 export default router;
